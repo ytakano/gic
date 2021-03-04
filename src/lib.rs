@@ -54,24 +54,29 @@ pub(crate) const ITARGETSR_SHIFT: usize = 2;
 pub(crate) const ICFGR_SHIFT: usize = 4;
 pub(crate) const NSACR_SHIFT: usize = 4;
 
+// GICD_TYPER shifts and masks
+pub(crate) const TYPER_IT_LINES_NO_SHIFT: u32 = 0;
+pub(crate) const TYPER_IT_LINES_NO_MASK: u32 = 0x1f;
+
 /// Value used to initialize Normal world interrupt priorities four at a time
 pub(crate) const GICD_IPRIORITYR_DEF_VAL: u32 = GIC_HIGHEST_NS_PRIORITY
     | (GIC_HIGHEST_NS_PRIORITY << 8)
     | (GIC_HIGHEST_NS_PRIORITY << 16)
     | (GIC_HIGHEST_NS_PRIORITY << 24);
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 pub enum InterruptGrp {
     Group0,
     Group1,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum InterruptCfg {
     LevelSensitive = 0,
     EdgeTrigger = 0b10,
 }
 
+#[derive(Clone, Copy)]
 pub struct InterruptProp {
     inter_num: u16,
     inter_pri: u8,
