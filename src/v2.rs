@@ -2,6 +2,13 @@ use crate::{to_ptr, InterruptCfg};
 use core::ptr::{read_volatile, write_volatile};
 
 /*******************************************************************************
+ * GICv2 miscellaneous definitions
+ ******************************************************************************/
+
+// Interrupt IDs reported by the HPPIR and IAR registers
+const PENDING_G1_INTID: u32 = 1022;
+
+/*******************************************************************************
  * GICv2 specific Distributor interface register offsets and constants.
  ******************************************************************************/
 const GICD_ITARGETSR: usize = 0x800;
@@ -19,15 +26,18 @@ const GIC_TARGET_CPU_MASK: u32 = 0xff;
 // Physical CPU Interface registers
 const GICC_CTLR: usize = 0x0; // CPU Interface Control Register
 const GICC_PMR: usize = 0x4; // Interrupt Priority Mask Register
-const GICC_BPR: usize = 0x8;
-const GICC_IAR: usize = 0xC;
-const GICC_EOIR: usize = 0x10;
-const GICC_RPR: usize = 0x14;
-const GICC_HPPIR: usize = 0x18;
-const GICC_AHPPIR: usize = 0x28;
-const GICC_IIDR: usize = 0xFC;
-const GICC_DIR: usize = 0x1000;
+const GICC_BPR: usize = 0x8; // Binary Point Register,
+const GICC_IAR: usize = 0xC; // Interrupt Acknowledge Register
+const GICC_EOIR: usize = 0x10; // End of Interrupt Register
+const GICC_RPR: usize = 0x14; // Running Priority Register
+const GICC_HPPIR: usize = 0x18; // Highest Priority Pending Interrupt Register
+const GICC_AHPPIR: usize = 0x28; // Aliased Highest Priority Pending Interrupt Register
+const GICC_IIDR: usize = 0xFC; // CPU Interface Identification Register
+const GICC_DIR: usize = 0x1000; // Deactivate Interrupt Register
 const GICC_PRIODROP: usize = GICC_EOIR;
+
+/// Interrupt ID mask for HPPIR, AHPPIR, IAR and AIAR CPU Interface registers
+const INT_ID_MASK: u32 = 0x3ff;
 
 bitflags! {
     /// GICC_CTLR register for secure mode
@@ -97,6 +107,7 @@ impl GICv2 {
     /// Per cpu gic distributor setup which will be done by all cpus after a cold
     /// boot/hotplug. This marks out the secure SPIs and PPIs & enables them.
     pub fn pcpu_distif_init(&self, props: &[crate::InterruptProp]) {
+        self.is_v2();
         self.secure_ppi_sgi_setup_props(props);
 
         // Enable G0 interrupts if not already
@@ -110,6 +121,8 @@ impl GICv2 {
     /// cold boot. It marks out the secure SPIs, PPIs & SGIs and enables them. It
     /// then enables the secure GIC distributor interface.
     pub fn distif_init(&self, props: &[crate::InterruptProp]) {
+        self.is_v2();
+
         // Disable the distributor before going further
         let ctlr = self.gicd_read_ctlr();
         self.gicd_write_ctlr(ctlr & !(GicdCtlrS::ENABLE_GRP0 | GicdCtlrS::ENABLE_GRP1));
@@ -121,6 +134,69 @@ impl GICv2 {
 
         // Re-enable the secure SPIs now that they have been configured
         self.gicd_write_ctlr(ctlr | GicdCtlrS::ENABLE_GRP0);
+    }
+
+    /// This function returns whether FIQ is enabled in the GIC CPU interface.
+    pub fn is_fiq_enabled(&self) -> bool {
+        let gicc_ctlr = self.gicc_read_ctlr();
+        gicc_ctlr.contains(GiccCtlrS::FIQ_EN)
+    }
+
+    /// This function returns the type of the highest priority pending interrupt at
+    /// the GIC cpu interface. The return values can be one of the following :
+    ///   PENDING_G1_INTID   : The interrupt type is non secure Group 1.
+    ///   0 - 1019           : The interrupt type is secure Group 0.
+    ///   GIC_SPURIOUS_INTERRUPT : there is no pending interrupt with
+    ///                            sufficient priority to be signaled
+    pub fn get_pending_interrupt_type(&self) -> u32 {
+        self.gicc_read_hppir() & INT_ID_MASK
+    }
+
+    /// This function returns the id of the highest priority pending interrupt at
+    /// the GIC cpu interface. GIC_SPURIOUS_INTERRUPT is returned when there is no
+    /// interrupt pending.
+    pub fn get_pending_interrupt_id(&self) -> u32 {
+        let id = self.gicc_read_hppir() & INT_ID_MASK;
+
+        // Find out which non-secure interrupt it is under the assumption that
+        // the GICC_CTLR.AckCtl bit is 0.
+        if id == PENDING_G1_INTID {
+            self.gicc_read_ahppir() & INT_ID_MASK
+        } else {
+            id
+        }
+    }
+
+    /// This functions reads the GIC cpu interface Interrupt Acknowledge register
+    /// to start handling the pending secure 0 interrupt. It returns the
+    /// contents of the IAR.
+    pub fn acknowledge_interrupt(&self) -> u32 {
+        self.gicc_read_iar()
+    }
+
+    /// This functions writes the GIC cpu interface End Of Interrupt register with
+    /// the passed value to finish handling the active secure group 0 interrupt.
+    pub fn end_of_interrupt(&self, id: u32) {
+        // Ensure the write to peripheral registers are *complete* before the write
+        // to GIC_EOIR.
+        //
+        // Note: The completion gurantee depends on various factors of system design
+        // and the barrier is the best core can do by which execution of further
+        // instructions waits till the barrier is alive.
+        unsafe { asm!("dsb ish; dsb sy") };
+        self.gicc_write_eoir(id);
+    }
+
+    // ------------------------------------------------------------------------
+    // Helper functions
+
+    /// Check GICv2
+    fn is_v2(&self) {
+        // Ensure that this is a GICv2 system
+        let gic_version =
+            (self.gicd_read_pidr2() >> crate::PIDR2_ARCH_REV_SHIFT) & crate::PIDR2_ARCH_REV_MASK;
+
+        assert!(gic_version == crate::ARCH_REV_GICV2 || gic_version == crate::ARCH_REV_GICV1);
     }
 
     fn spis_configure_defaults(&self) {
@@ -213,6 +289,9 @@ impl GICv2 {
         self.gicd_write_isenabler(0, sec_ppi_sgi_mask);
     }
 
+    // ------------------------------------------------------------------------
+    // GICD read
+
     /// Accessor to read the GIC Distributor ITARGETSR corresponding to the
     /// interrupt `id`, 4 interrupt IDs at a time.
     fn gicd_read_itargetsr(&self, id: usize) -> u32 {
@@ -242,9 +321,8 @@ impl GICv2 {
         unsafe { read_volatile(to_ptr(self.gicd_base, crate::GICD_CTLR)) }
     }
 
-    fn gicc_read_ctlr(&self) -> GiccCtlrS {
-        unsafe { read_volatile(to_ptr(self.gicc_base, GICC_CTLR)) }
-    }
+    // ------------------------------------------------------------------------
+    // GICD write
 
     /// Accessor to write the GIC Distributor IGROUPR corresponding to the
     /// interrupt `id`, 32 interrupt IDs at a time.
@@ -300,17 +378,17 @@ impl GICv2 {
         unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_CTLR), val) };
     }
 
-    fn gicc_write_pmr(&self, val: u8) {
-        unsafe { write_volatile(to_ptr(self.gicc_base, GICC_PMR), val as u32) };
-    }
-
-    fn gicc_write_ctlr(&self, val: GiccCtlrS) {
-        unsafe { write_volatile(to_ptr(self.gicc_base, GICC_CTLR), val) };
-    }
-
     fn get_cpuif_id(&self) -> u32 {
         let val = self.gicd_read_itargetsr(0);
         val & GIC_TARGET_CPU_MASK
+    }
+
+    // ------------------------------------------------------------------------
+    // GICD's API
+
+    /// GIC Distributor interface accessors for reading entire registers
+    pub fn gicd_read_pidr2(&self) -> u32 {
+        unsafe { read_volatile(to_ptr(self.gicd_base, GICD_PIDR2_GICV2)) }
     }
 
     pub fn gicd_clr_igroupr(&self, id: usize) {
@@ -331,7 +409,7 @@ impl GICv2 {
 
     pub fn gicd_set_ipriorityr(&self, id: usize, pri: u8) {
         let val = pri;
-        unsafe { write_volatile(to_ptr(self.gicc_base, crate::GICD_IPRIORITYR + id), val) };
+        unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_IPRIORITYR + id), val) };
     }
 
     pub fn gicd_set_icfgr(&self, id: usize, cfg: InterruptCfg) {
@@ -346,5 +424,39 @@ impl GICv2 {
         reg_val |= (cfg as u32) << bit_shift;
 
         self.gicd_write_icfgr(id, reg_val);
+    }
+
+    // ------------------------------------------------------------------------
+    // GICC read
+
+    fn gicc_read_ctlr(&self) -> GiccCtlrS {
+        unsafe { read_volatile(to_ptr(self.gicc_base, GICC_CTLR)) }
+    }
+
+    fn gicc_read_iar(&self) -> u32 {
+        unsafe { read_volatile(to_ptr(self.gicc_base, GICC_IAR)) }
+    }
+
+    fn gicc_read_hppir(&self) -> u32 {
+        unsafe { read_volatile(to_ptr(self.gicc_base, GICC_HPPIR)) }
+    }
+
+    fn gicc_read_ahppir(&self) -> u32 {
+        unsafe { read_volatile(to_ptr(self.gicc_base, GICC_AHPPIR)) }
+    }
+
+    // ------------------------------------------------------------------------
+    // GICC write
+
+    fn gicc_write_pmr(&self, val: u8) {
+        unsafe { write_volatile(to_ptr(self.gicc_base, GICC_PMR), val as u32) };
+    }
+
+    fn gicc_write_ctlr(&self, val: GiccCtlrS) {
+        unsafe { write_volatile(to_ptr(self.gicc_base, GICC_CTLR), val) };
+    }
+
+    fn gicc_write_eoir(&self, val: u32) {
+        unsafe { write_volatile(to_ptr(self.gicc_base, GICC_EOIR), val) };
     }
 }

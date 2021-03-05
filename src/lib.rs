@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(asm)]
 
 pub mod v2;
 
@@ -22,6 +23,9 @@ pub(crate) const GIC_PRI_MASK: u32 = 0xff;
 
 /// Mask for the configuration field common to all GIC interfaces */
 pub(crate) const GIC_CFG_MASK: u32 = 0x3;
+
+/// Constant to indicate a spurious interrupt in all GIC versions
+pub(crate) const GIC_SPURIOUS_INTERRUPT: u32 = 1023;
 
 // Highest possible interrupt priorities
 pub(crate) const GIC_HIGHEST_SEC_PRIORITY: u32 = 0x00;
@@ -53,6 +57,16 @@ pub(crate) const IPRIORITYR_SHIFT: usize = 2;
 pub(crate) const ITARGETSR_SHIFT: usize = 2;
 pub(crate) const ICFGR_SHIFT: usize = 4;
 pub(crate) const NSACR_SHIFT: usize = 4;
+
+// Common GIC Distributor interface register constants
+pub(crate) const PIDR2_ARCH_REV_SHIFT: u32 = 4;
+pub(crate) const PIDR2_ARCH_REV_MASK: u32 = 0xf;
+
+// GIC revision as reported by PIDR2.ArchRev register field */
+pub(crate) const ARCH_REV_GICV1: u32 = 0x1;
+pub(crate) const ARCH_REV_GICV2: u32 = 0x2;
+pub(crate) const ARCH_REV_GICV3: u32 = 0x3;
+pub(crate) const ARCH_REV_GICV4: u32 = 0x4;
 
 // GICD_TYPER shifts and masks
 pub(crate) const TYPER_IT_LINES_NO_SHIFT: u32 = 0;
