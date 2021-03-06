@@ -12,11 +12,11 @@ use synctools::mcs::{MCSLock, MCSLockGuard};
  * GIC Distributor interface general definitions
  ******************************************************************************/
 // Constants to categorise interrupts
-pub(crate) const MIN_SGI_ID: usize = 0;
-pub(crate) const MIN_SEC_SGI_ID: usize = 8;
-pub(crate) const MIN_PPI_ID: usize = 16;
-pub(crate) const MIN_SPI_ID: usize = 32;
-pub(crate) const MAX_SPI_ID: usize = 1019;
+pub(crate) const MIN_SGI_ID: u32 = 0;
+pub(crate) const MIN_SEC_SGI_ID: u32 = 8;
+pub(crate) const MIN_PPI_ID: u32 = 16;
+pub(crate) const MIN_SPI_ID: u32 = 32;
+pub(crate) const MAX_SPI_ID: u32 = 1019;
 
 /// Mask for the priority field common to all GIC interfaces
 pub(crate) const GIC_PRI_MASK: u32 = 0xff;

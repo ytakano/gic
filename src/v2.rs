@@ -64,6 +64,16 @@ bitflags! {
     }
 }
 
+#[inline(always)]
+fn dsbishsy() {
+    unsafe { asm!("dsb sy") };
+}
+
+#[inline(always)]
+fn dsbishst() {
+    unsafe { asm!("dsb ishst") };
+}
+
 pub enum Group {
     Group0 = 0, // secure
     Group1 = 1, // non secure
@@ -188,7 +198,7 @@ impl GICv2 {
         // Note: The completion gurantee depends on various factors of system design
         // and the barrier is the best core can do by which execution of further
         // instructions waits till the barrier is alive.
-        unsafe { asm!("dsb ish; dsb sy") };
+        dsbishsy();
         self.gicc_write_eoir(id);
     }
 
@@ -196,7 +206,7 @@ impl GICv2 {
     /// this interrupt has been configured under by the interrupt controller i.e.
     /// group0 secure or group1 non secure. It returns zero for Group 0 secure and
     /// one for Group 1 non secure interrupt.
-    pub fn get_interrupt_group(&self, id: usize) -> Group {
+    pub fn get_interrupt_group(&self, id: u32) -> Group {
         self.gicd_get_igroupr(id)
     }
 
@@ -204,6 +214,41 @@ impl GICv2 {
     /// currently servicing.
     pub fn get_running_pirority(&self) -> u32 {
         self.gicc_read_rpr()
+    }
+
+    /// This function sets the GICv2 target mask pattern for the current PE. The PE
+    /// target mask is used to translate linear PE index (returned by platform core
+    /// position) to a bit mask used when targeting interrupts to a PE (for example
+    /// when raising SGIs and routing SPIs).
+    pub fn set_pe_target_mask(&self) {
+        todo!();
+    }
+
+    /// This function returns the active status of the interrupt (either because the
+    /// state is active, or active and pending).
+    pub fn get_interrupt_active(&self, id: u32) -> bool {
+        assert!(id <= crate::MAX_SPI_ID);
+        self.gicd_get_isactiver(id)
+    }
+
+    /// This function enables the interrupt identified by id.
+    pub fn enable_interrupt(&self, id: u32) {
+        assert!(id <= crate::MAX_SPI_ID);
+
+        // Ensure that any shared variable updates depending on out of band
+        // interrupt trigger are observed before enabling interrupt.
+        dsbishst();
+        self.gicd_set_isenabler(id);
+    }
+
+    /// This function disables the interrupt identified by id.
+    pub fn disable_interrupt(&self, id: u32) {
+        assert!(id <= crate::MAX_SPI_ID);
+
+        // Disable interrupt, and ensure that any shared variable updates
+        // depending on out of band interrupt trigger are observed afterwards.
+        self.gicd_set_icenabler(id);
+        dsbishst();
     }
 
     // ------------------------------------------------------------------------
@@ -220,7 +265,7 @@ impl GICv2 {
 
     fn spis_configure_defaults(&self) {
         let num_ints = self.gicd_read_typer() & crate::TYPER_IT_LINES_NO_MASK;
-        let num_ints = ((num_ints + 1) << 5) as usize;
+        let num_ints = (num_ints + 1) << 5;
 
         // Treat all SPIs as G1NS by default. The number of interrupts is
         // calculated as 32 * (IT_LINES + 1). We do 32 at a time.
@@ -248,19 +293,19 @@ impl GICv2 {
 
             // Configure this interrupt as a secure interrupt
             assert!(prop.inter_grp == crate::InterruptGrp::Group0);
-            self.gicd_clr_igroupr(prop.inter_num as usize);
+            self.gicd_clr_igroupr(prop.inter_num as u32);
 
             // Set the priority of this interrupt
-            self.gicd_set_ipriorityr(prop.inter_num as usize, prop.inter_pri);
+            self.gicd_set_ipriorityr(prop.inter_num as u32, prop.inter_pri);
 
             // Target the secure interrupts to primary CPU
-            self.gicd_set_itargetsr(prop.inter_num as usize, self.get_cpuif_id());
+            self.gicd_set_itargetsr(prop.inter_num as u32, self.get_cpuif_id());
 
             // Set interrupt configuration
-            self.gicd_set_icfgr(prop.inter_num as usize, prop.inter_cfg);
+            self.gicd_set_icfgr(prop.inter_num as u32, prop.inter_cfg);
 
             // Enable this interrupt
-            self.gicd_set_isenabler(prop.inter_num as usize);
+            self.gicd_set_isenabler(prop.inter_num as u32);
         }
     }
 
@@ -287,17 +332,16 @@ impl GICv2 {
 
             // Set interrupt configuration for PPIs. Configuration for SGIs
             // are ignored.
-            if prop.inter_num >= crate::MIN_PPI_ID as u16
-                && prop.inter_num < crate::MIN_SPI_ID as u16
-            {
-                self.gicd_set_icfgr(prop.inter_num as usize, prop.inter_cfg);
+            let inter_num = prop.inter_num as u32;
+            if inter_num >= crate::MIN_PPI_ID && inter_num < crate::MIN_SPI_ID {
+                self.gicd_set_icfgr(inter_num, prop.inter_cfg);
             }
 
             // We have an SGI or a PPI. They are Group0 at reset
             sec_ppi_sgi_mask |= 1 << prop.inter_num;
 
             // Set the priority of this interrupt
-            self.gicd_set_ipriorityr(prop.inter_num as usize, prop.inter_pri);
+            self.gicd_set_ipriorityr(inter_num, prop.inter_pri);
         }
 
         // Invert the bitmask to create a mask for non-secure PPIs and SGIs.
@@ -311,24 +355,36 @@ impl GICv2 {
     // ------------------------------------------------------------------------
     // GICD read
 
+    /// GIC Distributor interface accessors for reading entire registers
+    fn gicd_read_pidr2(&self) -> u32 {
+        unsafe { read_volatile(to_ptr(self.gicd_base, GICD_PIDR2_GICV2)) }
+    }
+
     /// Accessor to read the GIC Distributor ITARGETSR corresponding to the
     /// interrupt `id`, 4 interrupt IDs at a time.
-    fn gicd_read_itargetsr(&self, id: usize) -> u32 {
-        let n = id >> crate::ITARGETSR_SHIFT;
+    fn gicd_read_itargetsr(&self, id: u32) -> u32 {
+        let n = (id >> crate::ITARGETSR_SHIFT) as usize;
         unsafe { read_volatile(to_ptr(self.gicd_base, GICD_ITARGETSR + (n << 2))) }
     }
 
     /// Accessor to read the GIC Distributor IGROUPR corresponding to the interrupt
     /// `id`, 32 interrupt ids at a time.
-    fn gicd_read_igroupr(&self, id: usize) -> u32 {
-        let n = id >> crate::IGROUPR_SHIFT;
+    fn gicd_read_igroupr(&self, id: u32) -> u32 {
+        let n = (id >> crate::IGROUPR_SHIFT) as usize;
         unsafe { read_volatile(to_ptr(self.gicd_base, crate::GICD_IGROUPR + (n << 2))) }
+    }
+
+    /// Accessor to read the GIC Distributor ISACTIVER corresponding to the
+    /// interrupt `id`, 32 interrupt IDs at a time.
+    fn gicd_read_isactiver(&self, id: u32) -> u32 {
+        let n = (id >> crate::ISACTIVER_SHIFT) as usize;
+        unsafe { read_volatile(to_ptr(self.gicd_base, crate::GICD_ISACTIVER + (n << 2))) }
     }
 
     /// Accessor to read the GIC Distributor ICGFR corresponding to the
     /// interrupt `id`, 16 interrupt IDs at a time.
-    fn gicd_read_icfgr(&self, id: usize) -> u32 {
-        let n = id >> crate::ICFGR_SHIFT;
+    fn gicd_read_icfgr(&self, id: u32) -> u32 {
+        let n = (id >> crate::ICFGR_SHIFT) as usize;
         unsafe { read_volatile(to_ptr(self.gicd_base, crate::GICD_ICFGR + (n << 2))) }
     }
 
@@ -345,15 +401,15 @@ impl GICv2 {
 
     /// Accessor to write the GIC Distributor IGROUPR corresponding to the
     /// interrupt `id`, 32 interrupt IDs at a time.
-    fn gicd_write_igroupr(&self, id: usize, val: u32) {
-        let n = id >> crate::IGROUPR_SHIFT;
+    fn gicd_write_igroupr(&self, id: u32, val: u32) {
+        let n = (id >> crate::IGROUPR_SHIFT) as usize;
         unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_IGROUPR + (n << 2)), val) };
     }
 
     /// Accessor to write the GIC Distributor ISENABLER corresponding to the
     /// interrupt `id`, 32 interrupt IDs at a time.
-    fn gicd_write_isenabler(&self, id: usize, val: u32) {
-        let n = id >> crate::ISENABLER_SHIFT;
+    fn gicd_write_isenabler(&self, id: u32, val: u32) {
+        let n = (id >> crate::ISENABLER_SHIFT) as usize;
         unsafe {
             write_volatile(
                 to_ptr(self.gicd_base, crate::GICD_ISENABLER + (n << 2)),
@@ -364,8 +420,8 @@ impl GICv2 {
 
     /// Accessor to write the GIC Distributor ICENABLER corresponding to the
     /// interrupt `id`, 32 interrupt IDs at a time.
-    fn gicd_write_icenabler(&self, id: usize, val: u32) {
-        let n = id >> crate::ICENABLER_SHIFT;
+    fn gicd_write_icenabler(&self, id: u32, val: u32) {
+        let n = (id >> crate::ICENABLER_SHIFT) as usize;
         unsafe {
             write_volatile(
                 to_ptr(self.gicd_base, crate::GICD_ICENABLER + (n << 2)),
@@ -376,8 +432,8 @@ impl GICv2 {
 
     /// Accessor to write the GIC Distributor IPRIORITYR corresponding to the
     /// interrupt `id`, 4 interrupt IDs at a time.
-    fn gicd_write_iproirityr(&self, id: usize, val: u32) {
-        let n = id >> crate::IPRIORITYR_SHIFT;
+    fn gicd_write_iproirityr(&self, id: u32, val: u32) {
+        let n = (id >> crate::IPRIORITYR_SHIFT) as usize;
         unsafe {
             write_volatile(
                 to_ptr(self.gicd_base, crate::GICD_IPRIORITYR + (n << 2)),
@@ -388,8 +444,8 @@ impl GICv2 {
 
     /// Accessor to write the GIC Distributor ICFGR corresponding to the
     /// interrupt `id`, 16 interrupt IDs at a time.
-    fn gicd_write_icfgr(&self, id: usize, val: u32) {
-        let n = id >> crate::ICFGR_SHIFT;
+    fn gicd_write_icfgr(&self, id: u32, val: u32) {
+        let n = (id >> crate::ICFGR_SHIFT) as usize;
         unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_ICFGR + (n << 2)), val) };
     }
 
@@ -405,12 +461,7 @@ impl GICv2 {
     // ------------------------------------------------------------------------
     // GICD's API
 
-    /// GIC Distributor interface accessors for reading entire registers
-    fn gicd_read_pidr2(&self) -> u32 {
-        unsafe { read_volatile(to_ptr(self.gicd_base, GICD_PIDR2_GICV2)) }
-    }
-
-    fn gicd_get_igroupr(&self, id: usize) -> Group {
+    fn gicd_get_igroupr(&self, id: u32) -> Group {
         let bit_num = id & ((1 << crate::IGROUPR_SHIFT) - 1);
         let reg_val = self.gicd_read_igroupr(id);
         if (reg_val >> bit_num) & 1 == 0 {
@@ -420,28 +471,44 @@ impl GICv2 {
         }
     }
 
-    fn gicd_clr_igroupr(&self, id: usize) {
+    fn gicd_clr_igroupr(&self, id: u32) {
         let bit_num = id & ((1 << crate::IGROUPR_SHIFT) - 1);
         let reg_val = self.gicd_read_igroupr(id);
         self.gicd_write_igroupr(id, reg_val & !(1 << bit_num));
     }
 
-    fn gicd_set_itargetsr(&self, id: usize, target: u32) {
+    fn gicd_set_itargetsr(&self, id: u32, target: u32) {
         let val = target & GIC_TARGET_CPU_MASK;
-        unsafe { write_volatile(to_ptr(self.gicd_base, GICD_ITARGETSR + id), val) };
+        unsafe { write_volatile(to_ptr(self.gicd_base, GICD_ITARGETSR + id as usize), val) };
     }
 
-    fn gicd_set_isenabler(&self, id: usize) {
+    fn gicd_set_isenabler(&self, id: u32) {
         let bit_num = id & ((1 << crate::ISENABLER_SHIFT) - 1);
         self.gicd_write_isenabler(id, 1 << bit_num);
     }
 
-    fn gicd_set_ipriorityr(&self, id: usize, pri: u8) {
-        let val = pri;
-        unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_IPRIORITYR + id), val) };
+    fn gicd_set_icenabler(&self, id: u32) {
+        let bit_num = id & ((1 << crate::ICENABLER_SHIFT) - 1);
+        self.gicd_write_icenabler(id, 1 << bit_num);
     }
 
-    fn gicd_set_icfgr(&self, id: usize, cfg: InterruptCfg) {
+    fn gicd_get_isactiver(&self, id: u32) -> bool {
+        let bit_num = id & ((1 << crate::ISACTIVER_SHIFT) - 1);
+        let reg_val = self.gicd_read_isactiver(id);
+        (reg_val >> bit_num) & 1 == 1
+    }
+
+    fn gicd_set_ipriorityr(&self, id: u32, pri: u8) {
+        let val = pri;
+        unsafe {
+            write_volatile(
+                to_ptr(self.gicd_base, crate::GICD_IPRIORITYR + id as usize),
+                val,
+            )
+        };
+    }
+
+    fn gicd_set_icfgr(&self, id: u32, cfg: InterruptCfg) {
         // Interrupt configuration is a 2-bit field
         let bit_num = id & ((1 << crate::ICFGR_SHIFT) - 1);
         let bit_shift = bit_num << 1;
