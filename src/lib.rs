@@ -92,10 +92,10 @@ pub enum InterruptCfg {
 
 #[derive(Clone, Copy)]
 pub struct InterruptProp {
-    inter_num: u16,
-    inter_pri: u8,
-    inter_grp: InterruptGrp,
-    inter_cfg: InterruptCfg,
+    pub inter_num: u16,
+    pub inter_pri: u8,
+    pub inter_grp: InterruptGrp,
+    pub inter_cfg: InterruptCfg,
 }
 
 static mut LOCK: MCSLock<()> = MCSLock::new(());

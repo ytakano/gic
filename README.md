@@ -37,6 +37,10 @@ let props = [];
 // Per CPU initialization
 // Enable the Group 0 SGIs and PPIs
 gicv2.pcpu_distif_init(&props);
+
+// Enable secure interrupts and use FIQs
+// Disable legacy bypass
+gicv2.cpuif_enable();
 ```
 
 ## Build
