@@ -12,12 +12,12 @@ const PENDING_G1_INTID: u32 = 1022;
  * GICv2 specific Distributor interface register offsets and constants.
  ******************************************************************************/
 const GICD_ITARGETSR: usize = 0x800;
-const GICD_SGIR: usize = 0xF00;
-const GICD_CPENDSGIR: usize = 0xF10;
-const GICD_SPENDSGIR: usize = 0xF20;
+const _GICD_SGIR: usize = 0xF00;
+const _GICD_CPENDSGIR: usize = 0xF10;
+const _GICD_SPENDSGIR: usize = 0xF20;
 const GICD_PIDR2_GICV2: usize = 0xFE8;
 
-const ITARGETSR_SHIFT: u32 = 2;
+const _ITARGETSR_SHIFT: u32 = 2;
 const GIC_TARGET_CPU_MASK: u32 = 0xff;
 
 /*******************************************************************************
@@ -26,15 +26,15 @@ const GIC_TARGET_CPU_MASK: u32 = 0xff;
 // Physical CPU Interface registers
 const GICC_CTLR: usize = 0x0; // CPU Interface Control Register
 const GICC_PMR: usize = 0x4; // Interrupt Priority Mask Register
-const GICC_BPR: usize = 0x8; // Binary Point Register,
+const _GICC_BPR: usize = 0x8; // Binary Point Register,
 const GICC_IAR: usize = 0xC; // Interrupt Acknowledge Register
 const GICC_EOIR: usize = 0x10; // End of Interrupt Register
 const GICC_RPR: usize = 0x14; // Running Priority Register
 const GICC_HPPIR: usize = 0x18; // Highest Priority Pending Interrupt Register
 const GICC_AHPPIR: usize = 0x28; // Aliased Highest Priority Pending Interrupt Register
-const GICC_IIDR: usize = 0xFC; // CPU Interface Identification Register
-const GICC_DIR: usize = 0x1000; // Deactivate Interrupt Register
-const GICC_PRIODROP: usize = GICC_EOIR;
+const _GICC_IIDR: usize = 0xFC; // CPU Interface Identification Register
+const _GICC_DIR: usize = 0x1000; // Deactivate Interrupt Register
+const _GICC_PRIODROP: usize = GICC_EOIR;
 
 /// Interrupt ID mask for HPPIR, AHPPIR, IAR and AIAR CPU Interface registers
 const INT_ID_MASK: u32 = 0x3ff;
@@ -74,6 +74,15 @@ fn dsbishst() {
     unsafe { asm!("dsb ishst") };
 }
 
+#[inline(always)]
+fn dmbishst() {
+    unsafe { asm!("dmb ishst") };
+}
+
+/// Indicate interrupt group
+/// Group0: secure world
+/// Group1: non secure world
+#[derive(Clone, Copy)]
 pub enum Group {
     Group0 = 0, // secure
     Group1 = 1, // non secure
@@ -195,7 +204,7 @@ impl GICv2 {
         // Ensure the write to peripheral registers are *complete* before the write
         // to GIC_EOIR.
         //
-        // Note: The completion gurantee depends on various factors of system design
+        // Note: The completion guarantee depends on various factors of system design
         // and the barrier is the best core can do by which execution of further
         // instructions waits till the barrier is alive.
         dsbishsy();
@@ -251,6 +260,89 @@ impl GICv2 {
         dsbishst();
     }
 
+    /// This function sets the interrupt priority as supplied for the given interrupt
+    /// id.
+    pub fn set_interrupt_priority(&self, id: u32, priority: u8) {
+        assert!(id <= crate::MAX_SPI_ID);
+        self.gicd_set_ipriorityr(id, priority);
+    }
+
+    /// This function assigns group for the interrupt identified by id. The group can
+    /// be any of GICV2_INTR_GROUP*
+    pub fn set_interrupt_type(&self, id: u32, int_type: Group) {
+        assert!(id <= crate::MAX_SPI_ID);
+
+        let _lock = crate::lock();
+        match int_type {
+            Group::Group0 => {
+                self.gicd_clr_igroupr(id);
+            }
+            Group::Group1 => {
+                self.gicd_set_igroupr(id);
+            }
+        }
+    }
+
+    /// This function raises the specified SGI to requested targets.
+    ///
+    /// The proc_num parameter must be the linear index of the target PE in the
+    /// system.
+    pub fn rasise_sgi(&self, _sgi_num: usize, _proc_num: usize) {
+        todo!();
+    }
+
+    /// This function sets the interrupt routing for the given SPI interrupt id.
+    /// The interrupt routing is specified in routing mode. The proc_num parameter is
+    /// linear index of the PE to target SPI. When proc_num < 0, the SPI may target
+    /// all PEs.
+    pub fn set_spi_routing(&self, id: u32, _proc_num: usize) {
+        assert!(crate::MIN_SPI_ID <= id && id <= crate::MAX_SPI_ID);
+
+        todo!();
+    }
+
+    /// This function clears the pending status of an interrupt identified by id.
+    pub fn clear_interrupt_pending(&self, id: u32) {
+        // SGIs can't be cleared pending
+        assert!(id >= crate::MIN_PPI_ID);
+
+        // Clear pending interrupt, and ensure that any shared variable updates
+        // depending on out of band interrupt trigger are observed afterwards.
+        self.gicd_set_icpendr(id);
+        dsbishst();
+    }
+
+    /// This function sets the pending status of an interrupt identified by id.
+    pub fn set_interrupt_pending(&self, id: u32) {
+        // SGIs can't be cleared pending
+        assert!(id >= crate::MIN_PPI_ID);
+
+        // Ensure that any shared variable updates depending on out of band
+        // interrupt trigger are observed before setting interrupt pending.
+        dsbishst();
+        self.gicd_set_ispendr(id);
+    }
+
+    /// This function sets the PMR register with the supplied value. Returns the
+    /// original PMR.
+    pub fn set_pmr(&self, mask: u8) -> u32 {
+        let old_mask = self.gicc_read_pmr();
+
+        // Order memory updates w.r.t. PMR write, and ensure they're visible
+        // before potential out of band interrupt trigger because of PMR update.
+        dmbishst();
+        self.gicc_write_pmr(mask);
+        dsbishst();
+
+        old_mask
+    }
+
+    // This function updates single interrupt configuration to be level/edge
+    // triggered
+    pub fn interrupt_set_cfg(&self, id: u32, cfg: InterruptCfg) {
+        self.gicd_set_icfgr(id, cfg);
+    }
+
     // ------------------------------------------------------------------------
     // Helper functions
 
@@ -275,7 +367,7 @@ impl GICv2 {
 
         // Setup the default SPI priorities doing four at a time
         for index in (crate::MIN_SPI_ID..num_ints).step_by(4) {
-            self.gicd_write_iproirityr(index, crate::GICD_IPRIORITYR_DEF_VAL);
+            self.gicd_write_ipriorityr(index, crate::GICD_IPRIORITYR_DEF_VAL);
         }
 
         // Treat all SPIs as level triggered by default, 16 at a time
@@ -318,7 +410,7 @@ impl GICv2 {
 
         // Setup the default PPI/SGI priorities doing four at a time
         for i in 0..crate::MIN_SPI_ID {
-            self.gicd_write_iproirityr(i, crate::GICD_IPRIORITYR_DEF_VAL);
+            self.gicd_write_ipriorityr(i, crate::GICD_IPRIORITYR_DEF_VAL);
         }
 
         let mut sec_ppi_sgi_mask = 0;
@@ -333,7 +425,7 @@ impl GICv2 {
             // Set interrupt configuration for PPIs. Configuration for SGIs
             // are ignored.
             let inter_num = prop.inter_num as u32;
-            if inter_num >= crate::MIN_PPI_ID && inter_num < crate::MIN_SPI_ID {
+            if (crate::MIN_PPI_ID..crate::MIN_SPI_ID).contains(&inter_num) {
                 self.gicd_set_icfgr(inter_num, prop.inter_cfg);
             }
 
@@ -430,9 +522,23 @@ impl GICv2 {
         };
     }
 
+    /// Accessor to write the GIC Distributor ISPENDR corresponding to the
+    /// interrupt `id`, 32 interrupt IDs at a time.
+    fn gicd_write_ispendr(&self, id: u32, val: u32) {
+        let n = (id >> crate::ISPENDR_SHIFT) as usize;
+        unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_ISPENDR + (n << 2)), val) };
+    }
+
+    /// Accessor to write the GIC Distributor ICPENDR corresponding to the
+    /// interrupt `id`, 32 interrupt IDs at a time.
+    fn gicd_write_icpendr(&self, id: u32, val: u32) {
+        let n = (id >> crate::ICPENDR_SHIFT) as usize;
+        unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_ICPENDR + (n << 2)), val) };
+    }
+
     /// Accessor to write the GIC Distributor IPRIORITYR corresponding to the
     /// interrupt `id`, 4 interrupt IDs at a time.
-    fn gicd_write_iproirityr(&self, id: u32, val: u32) {
+    fn gicd_write_ipriorityr(&self, id: u32, val: u32) {
         let n = (id >> crate::IPRIORITYR_SHIFT) as usize;
         unsafe {
             write_volatile(
@@ -471,6 +577,12 @@ impl GICv2 {
         }
     }
 
+    fn gicd_set_igroupr(&self, id: u32) {
+        let bit_num = id & ((1 << crate::IGROUPR_SHIFT) - 1);
+        let reg_val = self.gicd_read_igroupr(id);
+        self.gicd_write_igroupr(id, reg_val | (1 << bit_num));
+    }
+
     fn gicd_clr_igroupr(&self, id: u32) {
         let bit_num = id & ((1 << crate::IGROUPR_SHIFT) - 1);
         let reg_val = self.gicd_read_igroupr(id);
@@ -490,6 +602,16 @@ impl GICv2 {
     fn gicd_set_icenabler(&self, id: u32) {
         let bit_num = id & ((1 << crate::ICENABLER_SHIFT) - 1);
         self.gicd_write_icenabler(id, 1 << bit_num);
+    }
+
+    fn gicd_set_ispendr(&self, id: u32) {
+        let bit_num = id & ((1 << crate::ISPENDR_SHIFT) - 1);
+        self.gicd_write_ispendr(id, 1 << bit_num);
+    }
+
+    fn gicd_set_icpendr(&self, id: u32) {
+        let bit_num = id & ((1 << crate::ICPENDR_SHIFT) - 1);
+        self.gicd_write_icpendr(id, 1 << bit_num);
     }
 
     fn gicd_get_isactiver(&self, id: u32) -> bool {
@@ -527,6 +649,10 @@ impl GICv2 {
 
     fn gicc_read_ctlr(&self) -> GiccCtlrS {
         unsafe { read_volatile(to_ptr(self.gicc_base, GICC_CTLR)) }
+    }
+
+    fn gicc_read_pmr(&self) -> u32 {
+        unsafe { read_volatile(to_ptr(self.gicc_base, GICC_PMR)) }
     }
 
     fn gicc_read_iar(&self) -> u32 {

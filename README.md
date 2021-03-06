@@ -1,4 +1,4 @@
-# Library for Arm's GIC, UNDER CONSTRUCTION
+# Library for Arm's GIC
 
 This library provides APIs for Arm's GIC.
 
@@ -12,12 +12,12 @@ use gic::v2::GICv2;
 let gicv2 = GICv2::new(GICD_BASE, GICC_BASE);
 let props = [];
 
-// Initialize by primary CPU
+// Primary CPU initialization
 // Enable the secure GIC distributor interface
 // Enable SPIs, PPIs & SGIs
 gicv2.distif_init(&props);
 
-// Initialization of per CPU
+// Per CPU initialization
 // Enable the Group 0 SGIs and PPIs
 gicv2.pcpu_distif_init(&props);
 
@@ -34,7 +34,7 @@ use gic::v2::GICv2;
 let gicv2 = GICv2::new(GICD_BASE, GICC_BASE);
 let props = [];
 
-// Initialization of per CPU
+// Per CPU initialization
 // Enable the Group 0 SGIs and PPIs
 gicv2.pcpu_distif_init(&props);
 ```
@@ -43,8 +43,8 @@ gicv2.pcpu_distif_init(&props);
 
 nightly and aarch64's target are required.
 
- $ cargo +nightly build --target=aarch64-unknown-none-softfloat
+    $ cargo +nightly build --target=aarch64-unknown-none-softfloat
 
 Before building, you have to install the target as follows.
 
- $ rustup target add --toolchain nightly aarch64-unknown-none-softfloat
+    $ rustup target add --toolchain nightly aarch64-unknown-none-softfloat
