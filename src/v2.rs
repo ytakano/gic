@@ -379,7 +379,7 @@ impl GICv2 {
     /// Helper function to configure properties of secure G0 SPIs.
     fn secure_spis_configure_props(&self, props: &[crate::InterruptProp]) {
         for prop in props {
-            if prop.inter_num >= crate::MIN_SPI_ID as u16 {
+            if prop.inter_num < crate::MIN_SPI_ID as u16 {
                 continue;
             }
 

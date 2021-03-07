@@ -47,8 +47,12 @@ gicv2.cpuif_enable();
 
 nightly and aarch64's target are required.
 
-    $ cargo +nightly build --target=aarch64-unknown-none-softfloat
+```text
+$ cargo +nightly build --target=aarch64-unknown-none-softfloat
+```
 
 Before building, you have to install the target as follows.
 
-    $ rustup target add --toolchain nightly aarch64-unknown-none-softfloat
+```text
+$ rustup target add --toolchain nightly aarch64-unknown-none-softfloat
+```
