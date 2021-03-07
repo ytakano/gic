@@ -385,19 +385,20 @@ impl GICv2 {
 
             // Configure this interrupt as a secure interrupt
             assert!(prop.inter_grp == crate::InterruptGrp::Group0);
-            self.gicd_clr_igroupr(prop.inter_num as u32);
+            let inter_num = prop.inter_num as u32;
+            self.gicd_clr_igroupr(inter_num);
 
             // Set the priority of this interrupt
-            self.gicd_set_ipriorityr(prop.inter_num as u32, prop.inter_pri);
+            self.gicd_set_ipriorityr(inter_num, prop.inter_pri);
 
             // Target the secure interrupts to primary CPU
-            self.gicd_set_itargetsr(prop.inter_num as u32, self.get_cpuif_id());
+            self.gicd_set_itargetsr(inter_num, self.get_cpuif_id());
 
             // Set interrupt configuration
-            self.gicd_set_icfgr(prop.inter_num as u32, prop.inter_cfg);
+            self.gicd_set_icfgr(inter_num, prop.inter_cfg);
 
             // Enable this interrupt
-            self.gicd_set_isenabler(prop.inter_num as u32);
+            self.gicd_set_isenabler(inter_num);
         }
     }
 
@@ -590,8 +591,13 @@ impl GICv2 {
     }
 
     fn gicd_set_itargetsr(&self, id: u32, target: u32) {
-        let val = target & GIC_TARGET_CPU_MASK;
-        unsafe { write_volatile(to_ptr(self.gicd_base, GICD_ITARGETSR + id as usize), val) };
+        let val = (target & GIC_TARGET_CPU_MASK) as u8;
+        unsafe {
+            write_volatile(
+                to_ptr::<u8>(self.gicd_base, GICD_ITARGETSR + id as usize),
+                val,
+            )
+        };
     }
 
     fn gicd_set_isenabler(&self, id: u32) {
@@ -624,7 +630,7 @@ impl GICv2 {
         let val = pri;
         unsafe {
             write_volatile(
-                to_ptr(self.gicd_base, crate::GICD_IPRIORITYR + id as usize),
+                to_ptr::<u8>(self.gicd_base, crate::GICD_IPRIORITYR + id as usize),
                 val,
             )
         };
