@@ -79,15 +79,6 @@ fn dmbishst() {
     unsafe { asm!("dmb ishst") };
 }
 
-/// Indicate interrupt group
-/// Group0: secure world
-/// Group1: non secure world
-#[derive(Clone, Copy)]
-pub enum Group {
-    Group0 = 0, // secure
-    Group1 = 1, // non secure
-}
-
 pub struct GICv2 {
     gicd_base: usize,
     gicc_base: usize,
@@ -128,8 +119,10 @@ impl GICv2 {
         self.gicc_write_ctlr(ctlr);
     }
 
-    /// Per cpu gic distributor setup which will be done by all cpus after a cold
-    /// boot/hotplug. This marks out the secure SPIs and PPIs & enables them.
+    /// Per CPU initializeion
+    ///
+    /// - Setup the default PPI/SGI priorities doing four
+    /// - Configure PPIs and SGIs specified by props whose group must be 0. SPIs are ignored.
     pub fn pcpu_distif_init(&self, props: &[crate::InterruptProp]) {
         self.is_v2();
         self.secure_ppi_sgi_setup_props(props);
@@ -141,9 +134,12 @@ impl GICv2 {
         }
     }
 
-    /// Global gic distributor init which will be done by the primary cpu after a
-    /// cold boot. It marks out the secure SPIs, PPIs & SGIs and enables them. It
-    /// then enables the secure GIC distributor interface.
+    /// Primary CPU Initialization
+    ///
+    /// - Treat all SPIs as G1NS by default
+    /// - Setup the default SPI priorities doing four
+    /// - Treat all SPIs as level triggered by default
+    /// - Configure SPIs specified by props whose group must be 0. SGIs and PPIs are ignored.
     pub fn distif_init(&self, props: &[crate::InterruptProp]) {
         self.is_v2();
 
@@ -215,7 +211,7 @@ impl GICv2 {
     /// this interrupt has been configured under by the interrupt controller i.e.
     /// group0 secure or group1 non secure. It returns zero for Group 0 secure and
     /// one for Group 1 non secure interrupt.
-    pub fn get_interrupt_group(&self, id: u32) -> Group {
+    pub fn get_interrupt_group(&self, id: u32) -> crate::InterruptGrp {
         self.gicd_get_igroupr(id)
     }
 
@@ -269,15 +265,15 @@ impl GICv2 {
 
     /// This function assigns group for the interrupt identified by id. The group can
     /// be any of GICV2_INTR_GROUP*
-    pub fn set_interrupt_type(&self, id: u32, int_type: Group) {
+    pub fn set_interrupt_type(&self, id: u32, int_type: crate::InterruptGrp) {
         assert!(id <= crate::MAX_SPI_ID);
 
         let _lock = crate::lock();
         match int_type {
-            Group::Group0 => {
+            crate::InterruptGrp::Group0 => {
                 self.gicd_clr_igroupr(id);
             }
-            Group::Group1 => {
+            crate::InterruptGrp::Group1 => {
                 self.gicd_set_igroupr(id);
             }
         }
@@ -568,13 +564,13 @@ impl GICv2 {
     // ------------------------------------------------------------------------
     // GICD's API
 
-    fn gicd_get_igroupr(&self, id: u32) -> Group {
+    fn gicd_get_igroupr(&self, id: u32) -> crate::InterruptGrp {
         let bit_num = id & ((1 << crate::IGROUPR_SHIFT) - 1);
         let reg_val = self.gicd_read_igroupr(id);
         if (reg_val >> bit_num) & 1 == 0 {
-            Group::Group0
+            crate::InterruptGrp::Group0
         } else {
-            Group::Group1
+            crate::InterruptGrp::Group1
         }
     }
 
