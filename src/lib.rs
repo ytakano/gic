@@ -54,7 +54,7 @@ pub(crate) const ICPENDR_SHIFT: usize = ISPENDR_SHIFT;
 pub(crate) const ISACTIVER_SHIFT: usize = 5;
 pub(crate) const _ICACTIVER_SHIFT: usize = ISACTIVER_SHIFT;
 pub(crate) const IPRIORITYR_SHIFT: usize = 2;
-pub(crate) const ITARGETSR_SHIFT: usize = 2;
+pub(crate) const _ITARGETSR_SHIFT: usize = 2;
 pub(crate) const ICFGR_SHIFT: usize = 4;
 pub(crate) const _NSACR_SHIFT: usize = 4;
 

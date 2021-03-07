@@ -18,7 +18,7 @@ const _GICD_SPENDSGIR: usize = 0xF20;
 const GICD_PIDR2_GICV2: usize = 0xFE8;
 
 const _ITARGETSR_SHIFT: u32 = 2;
-const GIC_TARGET_CPU_MASK: u32 = 0xff;
+const _GIC_TARGET_CPU_MASK: u32 = 0xff;
 
 /*******************************************************************************
  * GICv2 specific CPU interface register offsets and constants.
@@ -61,6 +61,21 @@ bitflags! {
     struct GicdCtlrS: u32 {
         const ENABLE_GRP0 = 0b01; // Enable Group 0 interrupts.
         const ENABLE_GRP1 = 0b10; // Enable Group 1 interrupts.
+    }
+}
+
+bitflags! {
+    /// Interrupt Target
+    pub struct Target: u8 {
+        const CPU0 = 0b0000_0001;
+        const CPU1 = 0b0000_0010;
+        const CPU2 = 0b0000_0100;
+        const CPU3 = 0b0000_1000;
+        const CPU4 = 0b0001_0000;
+        const CPU5 = 0b0010_0000;
+        const CPU6 = 0b0100_0000;
+        const CPU7 = 0b1000_0000;
+        const ALL  = 0xFF;
     }
 }
 
@@ -124,7 +139,7 @@ impl GICv2 {
     /// - Setup the default PPI/SGI priorities doing four
     /// - Configure PPIs and SGIs specified by props whose group must be 0. SPIs are ignored.
     pub fn pcpu_distif_init(&self, props: &[crate::InterruptProp]) {
-        self.is_v2();
+        self.check_v2();
         self.secure_ppi_sgi_setup_props(props);
 
         // Enable G0 interrupts if not already
@@ -141,7 +156,7 @@ impl GICv2 {
     /// - Treat all SPIs as level triggered by default
     /// - Configure SPIs specified by props whose group must be 0. SGIs and PPIs are ignored.
     pub fn distif_init(&self, props: &[crate::InterruptProp]) {
-        self.is_v2();
+        self.check_v2();
 
         // Disable the distributor before going further
         let ctlr = self.gicd_read_ctlr();
@@ -289,12 +304,10 @@ impl GICv2 {
 
     /// This function sets the interrupt routing for the given SPI interrupt id.
     /// The interrupt routing is specified in routing mode. The proc_num parameter is
-    /// linear index of the PE to target SPI. When proc_num < 0, the SPI may target
-    /// all PEs.
-    pub fn set_spi_routing(&self, id: u32, _proc_num: usize) {
+    /// linear index of the PE to target SPI.
+    pub fn set_spi_routing(&self, id: u32, target: Target) {
         assert!(crate::MIN_SPI_ID <= id && id <= crate::MAX_SPI_ID);
-
-        todo!();
+        self.gicd_set_itargetsr(id, target);
     }
 
     /// This function clears the pending status of an interrupt identified by id.
@@ -343,7 +356,7 @@ impl GICv2 {
     // Helper functions
 
     /// Check GICv2
-    fn is_v2(&self) {
+    fn check_v2(&self) {
         // Ensure that this is a GICv2 system
         let gic_version =
             (self.gicd_read_pidr2() >> crate::PIDR2_ARCH_REV_SHIFT) & crate::PIDR2_ARCH_REV_MASK;
@@ -388,7 +401,7 @@ impl GICv2 {
             self.gicd_set_ipriorityr(inter_num, prop.inter_pri);
 
             // Target the secure interrupts to primary CPU
-            self.gicd_set_itargetsr(inter_num, self.get_cpuif_id());
+            self.gicd_set_itargetsr(inter_num, Target::CPU0);
 
             // Set interrupt configuration
             self.gicd_set_icfgr(inter_num, prop.inter_cfg);
@@ -447,13 +460,6 @@ impl GICv2 {
     /// GIC Distributor interface accessors for reading entire registers
     fn gicd_read_pidr2(&self) -> u32 {
         unsafe { read_volatile(to_ptr(self.gicd_base, GICD_PIDR2_GICV2)) }
-    }
-
-    /// Accessor to read the GIC Distributor ITARGETSR corresponding to the
-    /// interrupt `id`, 4 interrupt IDs at a time.
-    fn gicd_read_itargetsr(&self, id: u32) -> u32 {
-        let n = (id >> crate::ITARGETSR_SHIFT) as usize;
-        unsafe { read_volatile(to_ptr(self.gicd_base, GICD_ITARGETSR + (n << 2))) }
     }
 
     /// Accessor to read the GIC Distributor IGROUPR corresponding to the interrupt
@@ -556,11 +562,6 @@ impl GICv2 {
         unsafe { write_volatile(to_ptr(self.gicd_base, crate::GICD_CTLR), val) };
     }
 
-    fn get_cpuif_id(&self) -> u32 {
-        let val = self.gicd_read_itargetsr(0);
-        val & GIC_TARGET_CPU_MASK
-    }
-
     // ------------------------------------------------------------------------
     // GICD's API
 
@@ -586,14 +587,8 @@ impl GICv2 {
         self.gicd_write_igroupr(id, reg_val & !(1 << bit_num));
     }
 
-    fn gicd_set_itargetsr(&self, id: u32, target: u32) {
-        let val = (target & GIC_TARGET_CPU_MASK) as u8;
-        unsafe {
-            write_volatile(
-                to_ptr::<u8>(self.gicd_base, GICD_ITARGETSR + id as usize),
-                val,
-            )
-        };
+    fn gicd_set_itargetsr(&self, id: u32, target: Target) {
+        unsafe { write_volatile(to_ptr(self.gicd_base, GICD_ITARGETSR + id as usize), target) };
     }
 
     fn gicd_set_isenabler(&self, id: u32) {
